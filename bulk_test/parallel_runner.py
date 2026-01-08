@@ -92,18 +92,29 @@ try:
     print(f"Loading model on GPU {{gpu_id}} with strategy: {{strategy}}")
     print(f"GPU memory after import: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
 
-    # Load model with explicit device mapping to avoid loading on wrong GPU
+    # Load model with explicit dtype and efficient memory loading
     print(f"Loading model...")
-    model = MemoryLLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
-    print(f"GPU memory after from_pretrained: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+    model = MemoryLLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,  # More efficient loading
+    )
+
+    # Print model info before moving to GPU
+    print(f"Memory dtype: {{model.memory.dtype}}")
+    print(f"Model param dtype (first): {{next(model.parameters()).dtype}}")
 
     model = model.cuda()
     print(f"GPU memory after .cuda(): {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
 
+    # Convert model to bf16 if not already (safety check)
+    model = model.to(torch.bfloat16)
+    print(f"GPU memory after .to(bf16): {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+
     # Print model memory config
     print(f"Model config: num_tokens={{model.num_tokens}}, num_blocks={{model.num_blocks}}")
-    print(f"Memory shape: {{model.memory.shape}}")
-    print(f"Memory size: {{model.memory.numel() * 2 / 1e9:.2f}} GB (bf16)")
+    print(f"Memory shape: {{model.memory.shape}}, dtype: {{model.memory.dtype}}")
+    print(f"Memory size: {{model.memory.numel() * 2 / 1e9:.2f}} GB")
 
     # Set drop strategy after loading
     model.drop_strategy = strategy
