@@ -3,7 +3,10 @@ Bulk testing runner for MemoryLLM drop strategies.
 
 Usage:
     python bulk_test/runner.py --strategies random,fifo,lru --samples 100 --nuc 10
-    python bulk_test/runner.py --all --output results/bulk_test
+    python bulk_test/runner.py --all --output results/live
+
+Monitor in another terminal:
+    python bulk_test/live_tracker.py --watch results/live
 """
 
 import os
@@ -22,6 +25,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bulk_test.drop_strategies import STRATEGIES, list_strategies
+from bulk_test.live_tracker import LiveTracker, LiveResult
 
 
 @dataclass
@@ -308,10 +312,12 @@ def run_bulk_tests(
     strategies: List[str],
     num_samples: int = 100,
     num_contexts: int = 10,
-    output_dir: str = "results/bulk",
-    model_path: str = None
+    output_dir: str = "results/live",
+    model_path: str = None,
+    webhook_url: str = None,
+    winner_threshold: float = 0.05
 ) -> List[TestResult]:
-    """Run tests for multiple strategies."""
+    """Run tests for multiple strategies with live tracking."""
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -321,14 +327,38 @@ def run_bulk_tests(
     if model_path is None:
         model_path = settings["model"]
 
+    # Ensure "random" is first for baseline
+    if "random" in strategies and strategies[0] != "random":
+        strategies.remove("random")
+        strategies.insert(0, "random")
+    elif "random" not in strategies:
+        strategies.insert(0, "random")
+
+    # Initialize live tracker
+    tracker = LiveTracker(
+        output_dir=output_dir,
+        baseline_strategy="random",
+        winner_threshold=winner_threshold,
+        webhook_url=webhook_url
+    )
+
     print("\n" + "="*60)
-    print("MEMORYLLM BULK TESTING")
+    print("MEMORYLLM BULK TESTING (LIVE)")
     print("="*60)
     print(f"GPU: {get_gpu_info()}")
     print(f"Model: {model_path}")
     print(f"Strategies: {len(strategies)}")
     print(f"Samples per test: {num_samples}")
     print(f"Unrelated contexts: {num_contexts}")
+    print(f"Winner threshold: >{winner_threshold*100:.0f}% over baseline")
+    print(f"\n📁 Live results: {output_dir}/")
+    print(f"   - leaderboard.md  (live rankings)")
+    print(f"   - WINNERS.md      (strategies that beat baseline)")
+    print(f"   - live.log        (full log)")
+    print(f"   - status.json     (for monitoring)")
+    print("="*60)
+    print("\n💡 Monitor in another terminal:")
+    print(f"   python bulk_test/live_tracker.py --watch {output_dir}")
     print("="*60 + "\n")
 
     results = []
@@ -348,14 +378,23 @@ def run_bulk_tests(
         result = run_single_test_subprocess(config)
         results.append(result)
 
-        if result.error:
-            print(f"  ERROR: {result.error}")
-        else:
-            print(f"  Accuracy: {result.accuracy:.2%}")
-            print(f"  Time: {result.time_seconds:.1f}s")
+        # Record to live tracker
+        live_result = LiveResult(
+            strategy=result.strategy,
+            accuracy=result.accuracy,
+            time_seconds=result.time_seconds,
+            num_contexts=result.num_contexts,
+            num_samples=result.num_samples,
+            timestamp=result.timestamp,
+            error=result.error
+        )
+        tracker.record_result(live_result)
 
-        # Save incrementally
+        # Also save old-style results
         save_results(results, output_path)
+
+    # Finalize tracking
+    tracker.finish(len(strategies))
 
     # Final summary
     print_summary(results)
@@ -425,6 +464,10 @@ def main():
                         help="Output directory for results")
     parser.add_argument("--model", type=str, default=None,
                         help="Model path (auto-detected if not specified)")
+    parser.add_argument("--webhook", type=str, default=None,
+                        help="Webhook URL for winner alerts (Discord/Slack)")
+    parser.add_argument("--threshold", type=float, default=0.05,
+                        help="Winner threshold (default: 0.05 = 5%% improvement)")
     parser.add_argument("--list", action="store_true",
                         help="List available strategies and exit")
 
@@ -470,7 +513,9 @@ def main():
         num_samples=args.samples,
         num_contexts=args.nuc,
         output_dir=args.output,
-        model_path=args.model
+        model_path=args.model,
+        webhook_url=args.webhook,
+        winner_threshold=args.threshold
     )
 
     print(f"\nResults saved to: {args.output}")
