@@ -430,8 +430,8 @@ def main():
                         help="Unrelated contexts")
     parser.add_argument("--output", type=str, default="results/parallel",
                         help="Output directory")
-    parser.add_argument("--model", type=str, default="YuWangX/memoryllm-8b",
-                        help="Model path")
+    parser.add_argument("--model", type=str, default="YuWangX/memoryllm-7b",
+                        help="Model path (default: 7b to fit in 44GB A40)")
     parser.add_argument("--webhook", type=str, default=None,
                         help="Webhook URL for alerts")
     parser.add_argument("--list-gpus", action="store_true",
