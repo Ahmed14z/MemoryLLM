@@ -1550,24 +1550,32 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
         if config.add_bos_embedding:
             self.bos_embedding = nn.Parameter(torch.randn([self.L, 1, self.d]))
 
+        # Only apply PEFT if lora_config is set AND model doesn't already have PEFT
+        # (pretrained models from HuggingFace already have LoRA baked in)
         if config.lora_config is not None:
+            # Check if PEFT is already applied (avoid double-wrapping)
+            is_peft_already_applied = hasattr(self.model, 'base_model') or \
+                                      any('lora' in name.lower() for name, _ in self.model.named_parameters())
 
-            from peft import get_peft_model, LoraConfig, TaskType
+            if not is_peft_already_applied:
+                from peft import get_peft_model, LoraConfig, TaskType
 
-            # Use FEATURE_EXTRACTION instead of CAUSAL_LM for inner LlamaModel
-            # CAUSAL_LM expects generation methods which LlamaModel doesn't have in newer transformers
-            peft_config = LoraConfig(
-                task_type=TaskType.FEATURE_EXTRACTION,
-                inference_mode=config.lora_config['inference_mode'],
-                r=config.lora_config['r'],
-                lora_alpha=config.lora_config['lora_alpha'],
-                lora_dropout=config.lora_config['lora_dropout'],
-                target_modules=config.lora_config.get('target_modules', None)
-            )
+                # Use FEATURE_EXTRACTION instead of CAUSAL_LM for inner LlamaModel
+                # CAUSAL_LM expects generation methods which LlamaModel doesn't have in newer transformers
+                peft_config = LoraConfig(
+                    task_type=TaskType.FEATURE_EXTRACTION,
+                    inference_mode=config.lora_config['inference_mode'],
+                    r=config.lora_config['r'],
+                    lora_alpha=config.lora_config['lora_alpha'],
+                    lora_dropout=config.lora_config['lora_dropout'],
+                    target_modules=config.lora_config.get('target_modules', None)
+                )
 
-            self.model = get_peft_model(self.model, peft_config)
-            if config.add_decoder_lora:
-                self.model = get_peft_model(self.model, peft_config, adapter_name="decoder_adapter")
+                self.model = get_peft_model(self.model, peft_config)
+                if config.add_decoder_lora:
+                    self.model = get_peft_model(self.model, peft_config, adapter_name="decoder_adapter")
+            else:
+                print("PEFT already applied, skipping double-wrapping")
 
 
     def inject_memory(self, context_ids,
