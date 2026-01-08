@@ -39,22 +39,7 @@ def setup_nq_dataset(output_dir: str = "data/nq", num_dev_samples: int = 1000):
 
     # Process validation set (used as dev)
     print("\nProcessing validation set...")
-    print("(Note: Original code only keeps YES/NO questions - small subset)")
     valid_indices = []
-
-    # Debug: print first example structure
-    first_example = next(iter(dataset["validation"]))
-    print("\nDEBUG - First example structure:")
-    print(f"  Keys: {list(first_example.keys())}")
-    annotations = first_example.get("annotations", {})
-    print(f"  annotations keys: {list(annotations.keys()) if isinstance(annotations, dict) else type(annotations)}")
-    print(f"  yes_no_answer: {annotations.get('yes_no_answer', 'N/A')}")
-    print(f"  long_answer: {annotations.get('long_answer', 'N/A')}")
-    sa = annotations.get('short_answers', [])
-    print(f"  short_answers type: {type(sa)}, len: {len(sa) if hasattr(sa, '__len__') else 'N/A'}")
-    if sa:
-        print(f"  short_answers[0]: {sa[0] if sa else 'empty'}")
-    print()
 
     with open(dev_file, "w") as f:
         for idx, example in enumerate(dataset["validation"]):
@@ -106,57 +91,70 @@ def setup_nq_dataset(output_dir: str = "data/nq", num_dev_samples: int = 1000):
 
 
 def convert_example(example: dict) -> dict:
-    """Convert HuggingFace NQ format to expected jsonl format."""
+    """Convert HuggingFace NQ format to expected jsonl format.
+
+    HF format has 5 annotators, we need to find one with valid answers.
+    """
 
     try:
-        # Get annotations - in HF format these are nested with lists
         annotations = example.get("annotations", {})
 
-        # yes_no_answer: -1=none (extractive QA), 0=no, 1=yes
-        yes_no_list = annotations.get("yes_no_answer", [-1])
-        yes_no = yes_no_list[0] if yes_no_list else -1
+        # yes_no_answer is a list of 5 values (one per annotator)
+        yes_no_list = annotations.get("yes_no_answer", [])
 
-        # Map to string format expected by original code
-        # Original code skips when yes_no_answer == 'None', so we need non-None
-        # But actually most examples are extractive (-1), so let's keep those too
-        # and just set yes_no_answer to "NONE" which the original code checks
+        # Find first non-(-1) yes_no answer, or default to -1
+        yes_no = -1
+        for yn in yes_no_list:
+            if yn != -1:
+                yes_no = yn
+                break
+
+        # Map to string
         if yes_no == 1:
             yes_no_str = "YES"
         elif yes_no == 0:
             yes_no_str = "NO"
         else:
-            yes_no_str = "NONE"  # Extractive QA - this is fine!
+            yes_no_str = "NONE"
 
-        # long_answer has lists for each field
-        long_answer = annotations.get("long_answer", {})
-        la_start_list = long_answer.get("start_token", [-1])
-        la_end_list = long_answer.get("end_token", [-1])
+        # long_answer is a list of 5 dicts (one per annotator)
+        # Find first valid one (start_token >= 0)
+        long_answers = annotations.get("long_answer", [])
+        la_start = -1
+        la_end = -1
 
-        la_start = la_start_list[0] if la_start_list else -1
-        la_end = la_end_list[0] if la_end_list else -1
+        for la in long_answers:
+            if isinstance(la, dict):
+                st = la.get("start_token", -1)
+                et = la.get("end_token", -1)
+                if st >= 0 and et > st:
+                    la_start = st
+                    la_end = et
+                    break
 
-        # Need valid long answer
-        if la_start < 0 or la_end < 0 or la_start >= la_end:
+        if la_start < 0 or la_end < 0:
             return None
 
-        # short_answers is a list of answer dicts
-        short_answers_list = annotations.get("short_answers", [])
-
-        # Get first valid short answer
+        # short_answers is a list of 5 dicts, each with lists inside
+        # Find first annotator with non-empty short answers
+        short_answers_all = annotations.get("short_answers", [])
         sa_start = -1
         sa_end = -1
 
-        if short_answers_list:
-            first_short = short_answers_list[0]
-            sa_start_list = first_short.get("start_token", [])
-            sa_end_list = first_short.get("end_token", [])
+        for sa_annotator in short_answers_all:
+            if isinstance(sa_annotator, dict):
+                st_list = sa_annotator.get("start_token", [])
+                et_list = sa_annotator.get("end_token", [])
+                if st_list and et_list:
+                    sa_start = st_list[0]
+                    sa_end = et_list[0]
+                    if sa_start >= 0 and sa_end > sa_start:
+                        break
+                    else:
+                        sa_start = -1
+                        sa_end = -1
 
-            if sa_start_list and sa_end_list:
-                sa_start = sa_start_list[0] if sa_start_list else -1
-                sa_end = sa_end_list[0] if sa_end_list else -1
-
-        # Need valid short answer
-        if sa_start < 0 or sa_end < 0 or sa_start >= sa_end:
+        if sa_start < 0 or sa_end < 0:
             return None
 
         # Get document tokens
@@ -168,7 +166,7 @@ def convert_example(example: dict) -> dict:
         if not token_texts:
             return None
 
-        # Build document_tokens in expected format
+        # Build document_tokens
         document_tokens = []
         for text, html in zip(token_texts, is_html):
             document_tokens.append({
@@ -203,7 +201,6 @@ def convert_example(example: dict) -> dict:
         return converted
 
     except Exception:
-        # Skip malformed examples
         return None
 
 

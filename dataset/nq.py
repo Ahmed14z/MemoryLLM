@@ -48,7 +48,11 @@ class NQDataset(Dataset):
             for line in file:
                 json_obj = json.loads(line)
 
-                if json_obj['annotations'][0]['yes_no_answer'] == 'None':
+                # Accept all answer types: YES, NO, NONE (extractive QA)
+                # Original code skipped 'None' but we want extractive QA too
+                yes_no = json_obj['annotations'][0].get('yes_no_answer', 'NONE')
+                # Skip only if there's no valid annotation at all
+                if yes_no is None:
                     continue
 
                 question_text = json_obj['question_text']
