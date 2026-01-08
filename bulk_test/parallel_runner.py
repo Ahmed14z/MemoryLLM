@@ -92,27 +92,25 @@ try:
     print(f"Loading model on GPU {{gpu_id}} with strategy: {{strategy}}")
     print(f"GPU memory after import: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
 
-    # Load model with 4-bit quantization to fit in 44GB A40
-    print(f"Loading model with 4-bit quantization...")
-    from transformers import BitsAndBytesConfig
+    # Load model in bfloat16 directly to GPU
+    print(f"Loading model in bfloat16...")
 
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
-    )
+    # Set default dtype to bfloat16 before loading
+    torch.set_default_dtype(torch.bfloat16)
 
     model = MemoryLLM.from_pretrained(
         model_path,
-        quantization_config=quantization_config,
-        device_map="cuda",
         torch_dtype=torch.bfloat16,
-    )
+        low_cpu_mem_usage=True,
+    ).cuda()
+
+    # Reset default dtype
+    torch.set_default_dtype(torch.float32)
 
     print(f"GPU memory after loading: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+    print(f"Model param dtype: {{next(model.parameters()).dtype}}")
+    print(f"Memory dtype: {{model.memory.dtype}}")
     print(f"Model config: num_tokens={{model.num_tokens}}, num_blocks={{model.num_blocks}}")
-    print(f"Memory shape: {{model.memory.shape}}, dtype: {{model.memory.dtype}}")
 
     # Set drop strategy after loading
     model.drop_strategy = strategy
