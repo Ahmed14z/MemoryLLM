@@ -17,7 +17,7 @@ peft>=0.10.0
 accelerate>=0.29.3
 safetensors
 datasets
-
+protobuf
 # For 4-bit quantization on smaller GPUs
 bitsandbytes
 
