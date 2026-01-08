@@ -20,8 +20,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import List, Optional
-import torch
+from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -31,44 +30,36 @@ from bulk_test.live_tracker import LiveTracker, LiveResult
 
 def get_num_gpus() -> int:
     """Get number of available GPUs."""
-    if not torch.cuda.is_available():
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return 0
+        return torch.cuda.device_count()
+    except ImportError:
         return 0
-    return torch.cuda.device_count()
 
 
 def get_gpu_info_all() -> List[dict]:
     """Get info for all GPUs."""
     gpus = []
-    for i in range(get_num_gpus()):
-        props = torch.cuda.get_device_properties(i)
-        gpus.append({
-            "id": i,
-            "name": props.name,
-            "memory_gb": props.total_memory / 1024**3
-        })
+    try:
+        import torch
+        for i in range(get_num_gpus()):
+            props = torch.cuda.get_device_properties(i)
+            gpus.append({
+                "id": i,
+                "name": props.name,
+                "memory_gb": props.total_memory / 1024**3
+            })
+    except ImportError:
+        pass
     return gpus
 
 
-def run_strategy_on_gpu(
-    strategy: str,
-    gpu_id: int,
-    model_path: str,
-    num_samples: int,
-    num_contexts: int,
-    output_dir: str
-) -> dict:
-    """Run a single strategy test on a specific GPU."""
-
-    start_time = time.time()
-
-    # Set GPU for this process
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    env["MEMORYLLM_DROP_STRATEGY"] = strategy
-
-    # Create a temporary script to run the test
-    test_script = f"""
-import sys
+def create_test_script(strategy: str, gpu_id: int, model_path: str,
+                       num_samples: int, num_contexts: int) -> str:
+    """Create a test script as a string."""
+    script = '''import sys
 sys.path.insert(0, '.')
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "{gpu_id}"
@@ -77,38 +68,44 @@ import torch
 import json
 from datetime import datetime
 
+strategy = "{strategy}"
+model_path = "{model_path}"
+num_samples = {num_samples}
+num_contexts = {num_contexts}
+gpu_id = {gpu_id}
+
 try:
     from configuration_memoryllm import MemoryLLMConfig
     from modeling_memoryllm import MemoryLLM
     from transformers import AutoTokenizer
 
-    print(f"Loading model on GPU {gpu_id} with strategy: {strategy}")
+    print(f"Loading model on GPU {{gpu_id}} with strategy: {{strategy}}")
 
     # Load model with strategy
-    config = MemoryLLMConfig.from_pretrained("{model_path}")
-    config.drop_strategy = "{strategy}"
+    config = MemoryLLMConfig.from_pretrained(model_path)
+    config.drop_strategy = strategy
 
     model = MemoryLLM.from_pretrained(
-        "{model_path}",
+        model_path,
         config=config,
         torch_dtype=torch.bfloat16,
         device_map="cuda:0"
     )
 
-    tokenizer = AutoTokenizer.from_pretrained("{model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     # Load test data
     from dataset.nq import NQDataset
     dataset = NQDataset(
         filename="./data/nq/v1.0-simplified_nq-dev-all.jsonl",
-        num_unrelated_contexts={num_contexts},
+        num_unrelated_contexts=num_contexts,
         tokenizer='llama',
-        tokenizer_path="{model_path}"
+        tokenizer_path=model_path
     )
 
     # Run evaluation
     correct = 0
-    total = min({num_samples}, len(dataset))
+    total = min(num_samples, len(dataset))
 
     for i in range(total):
         context, question, answer, unrelated_contexts = dataset[i]
@@ -117,7 +114,7 @@ try:
         context_ids = tokenizer(context, return_tensors="pt").input_ids.cuda()
         model.inject_memory(context_ids, update_memory=True)
 
-        for uc in unrelated_contexts[:{num_contexts}]:
+        for uc in unrelated_contexts[:num_contexts]:
             uc_ids = tokenizer(uc, return_tensors="pt").input_ids.cuda()
             model.inject_memory(uc_ids, update_memory=True)
 
@@ -134,31 +131,55 @@ try:
         model.initialized.fill_(0)
 
         if (i + 1) % 20 == 0:
-            print(f"  Progress: {{i+1}}/{{total}} ({{correct/(i+1)*100:.1f}}% acc so far)")
+            acc_so_far = correct / (i + 1) * 100
+            print(f"  Progress: {{i+1}}/{{total}} ({{acc_so_far:.1f}}% acc so far)")
 
     accuracy = correct / total if total > 0 else 0.0
 
     result = {{
-        "strategy": "{strategy}",
+        "strategy": strategy,
         "accuracy": accuracy,
         "num_samples": total,
-        "num_contexts": {num_contexts},
-        "gpu_id": {gpu_id},
+        "num_contexts": num_contexts,
+        "gpu_id": gpu_id,
         "error": None
     }}
 
 except Exception as e:
     result = {{
-        "strategy": "{strategy}",
+        "strategy": strategy,
         "accuracy": 0.0,
         "num_samples": 0,
-        "num_contexts": {num_contexts},
-        "gpu_id": {gpu_id},
+        "num_contexts": num_contexts,
+        "gpu_id": gpu_id,
         "error": str(e)
     }}
 
 print(f"RESULT_JSON:{{json.dumps(result)}}")
-"""
+'''.format(
+        strategy=strategy,
+        gpu_id=gpu_id,
+        model_path=model_path,
+        num_samples=num_samples,
+        num_contexts=num_contexts
+    )
+    return script
+
+
+def run_strategy_on_gpu(
+    strategy: str,
+    gpu_id: int,
+    model_path: str,
+    num_samples: int,
+    num_contexts: int,
+    output_dir: str
+) -> dict:
+    """Run a single strategy test on a specific GPU."""
+
+    start_time = time.time()
+
+    # Create test script
+    test_script = create_test_script(strategy, gpu_id, model_path, num_samples, num_contexts)
 
     # Write temp script
     script_path = Path(output_dir) / f"_temp_{strategy}_{gpu_id}.py"
@@ -194,7 +215,7 @@ print(f"RESULT_JSON:{{json.dumps(result)}}")
             "num_samples": 0,
             "num_contexts": num_contexts,
             "gpu_id": gpu_id,
-            "error": f"No result found in output: {output[-500:]}",
+            "error": "No result found in output: " + output[-500:],
             "timestamp": datetime.now().isoformat()
         }
 
@@ -265,15 +286,17 @@ def run_parallel_tests(
     print(f"Strategies to test: {len(strategies)}")
     print(f"Samples per test: {num_samples}")
     print(f"Unrelated contexts: {num_contexts}")
-    print(f"\nEstimated time: ~{len(strategies) / num_workers * 15:.0f} minutes")
-    print(f"(vs ~{len(strategies) * 15:.0f} minutes sequential)")
+    est_time = len(strategies) / num_workers * 15
+    seq_time = len(strategies) * 15
+    print(f"\nEstimated time: ~{est_time:.0f} minutes")
+    print(f"(vs ~{seq_time:.0f} minutes sequential)")
     print("="*60 + "\n")
 
     # Assign strategies to GPUs round-robin
     gpu_assignments = []
     for i, strategy in enumerate(strategies):
-        gpu_id = i % num_workers
-        gpu_assignments.append((strategy, gpu_id))
+        assigned_gpu = i % num_workers
+        gpu_assignments.append((strategy, assigned_gpu))
 
     # Run in parallel
     results = []
@@ -282,11 +305,11 @@ def run_parallel_tests(
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         # Submit all jobs
         futures = {}
-        for strategy, gpu_id in gpu_assignments:
+        for strategy, assigned_gpu in gpu_assignments:
             future = executor.submit(
                 run_strategy_on_gpu,
                 strategy=strategy,
-                gpu_id=gpu_id,
+                gpu_id=assigned_gpu,
                 model_path=model_path,
                 num_samples=num_samples,
                 num_contexts=num_contexts,
@@ -315,17 +338,23 @@ def run_parallel_tests(
                 )
                 tracker.record_result(live_result)
 
-                print(f"[{completed}/{len(strategies)}] {strategy}: "
-                      f"{'ERROR' if result.get('error') else f'{result[\"accuracy\"]:.2%}'} "
-                      f"(GPU {result.get('gpu_id', '?')})")
+                # Print status
+                total_strategies = len(strategies)
+                if result.get('error'):
+                    status = "ERROR"
+                else:
+                    status = f"{result['accuracy']:.2%}"
+                gpu_used = result.get('gpu_id', '?')
+                print(f"[{completed}/{total_strategies}] {strategy}: {status} (GPU {gpu_used})")
 
             except Exception as e:
-                print(f"[{completed}/{len(strategies)}] {strategy}: FAILED - {e}")
+                total_strategies = len(strategies)
+                print(f"[{completed}/{total_strategies}] {strategy}: FAILED - {e}")
 
     # Finalize
     tracker.finish(len(strategies))
 
-    print(f"\n✅ All tests complete!")
+    print("\nAll tests complete!")
     print(f"Results: {output_dir}/")
 
     return results
@@ -358,7 +387,8 @@ def main():
     args = parser.parse_args()
 
     if args.list_gpus:
-        print(f"GPUs: {get_num_gpus()}")
+        num_gpus = get_num_gpus()
+        print(f"GPUs: {num_gpus}")
         for gpu in get_gpu_info_all():
             print(f"  {gpu['id']}: {gpu['name']} ({gpu['memory_gb']:.0f}GB)")
         return
