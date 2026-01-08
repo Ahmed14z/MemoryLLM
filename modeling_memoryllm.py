@@ -1524,12 +1524,16 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
         self.add_decoder_lora = config.add_decoder_lora
 
         self.add_bos_embedding = config.add_bos_embedding
-        self.memory = nn.Parameter(torch.randn([self.L, self.num_blocks * self.num_tokens, self.d]))
-        print(f"Memory Pool Parameters: {len(self.memory.reshape(-1)) / 1_000_000_000:.4f} B")
+        # Use bfloat16 for memory to save VRAM (matches model dtype)
+        self.memory = nn.Parameter(torch.randn(
+            [self.L, self.num_blocks * self.num_tokens, self.d],
+            dtype=torch.bfloat16
+        ))
+        print(f"Memory Pool Parameters: {len(self.memory.reshape(-1)) / 1_000_000_000:.4f} B ({self.memory.dtype})")
         self.register_buffer("initialized", torch.tensor(0, dtype=torch.uint8))
         self.memory.requires_grad = False
         self._detach_memory = False # new feature, will be used in later versions
-        self.new_memory_positional_emb = nn.Parameter(torch.zeros([1, 1, self.d]))
+        self.new_memory_positional_emb = nn.Parameter(torch.zeros([1, 1, self.d], dtype=torch.bfloat16))
 
         # Bulk testing: Drop strategy support
         self.drop_strategy = getattr(config, 'drop_strategy', 'random')
@@ -1548,7 +1552,7 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
                 self.drop_strategy = 'random'
 
         if config.add_bos_embedding:
-            self.bos_embedding = nn.Parameter(torch.randn([self.L, 1, self.d]))
+            self.bos_embedding = nn.Parameter(torch.randn([self.L, 1, self.d], dtype=torch.bfloat16))
 
         # Only apply PEFT if lora_config is set AND model doesn't already have PEFT
         # (pretrained models from HuggingFace already have LoRA baked in)
