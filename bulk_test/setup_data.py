@@ -39,7 +39,22 @@ def setup_nq_dataset(output_dir: str = "data/nq", num_dev_samples: int = 1000):
 
     # Process validation set (used as dev)
     print("\nProcessing validation set...")
+    print("(Note: Original code only keeps YES/NO questions - small subset)")
     valid_indices = []
+
+    # Debug: print first example structure
+    first_example = next(iter(dataset["validation"]))
+    print("\nDEBUG - First example structure:")
+    print(f"  Keys: {list(first_example.keys())}")
+    annotations = first_example.get("annotations", {})
+    print(f"  annotations keys: {list(annotations.keys()) if isinstance(annotations, dict) else type(annotations)}")
+    print(f"  yes_no_answer: {annotations.get('yes_no_answer', 'N/A')}")
+    print(f"  long_answer: {annotations.get('long_answer', 'N/A')}")
+    sa = annotations.get('short_answers', [])
+    print(f"  short_answers type: {type(sa)}, len: {len(sa) if hasattr(sa, '__len__') else 'N/A'}")
+    if sa:
+        print(f"  short_answers[0]: {sa[0] if sa else 'empty'}")
+    print()
 
     with open(dev_file, "w") as f:
         for idx, example in enumerate(dataset["validation"]):
@@ -97,13 +112,20 @@ def convert_example(example: dict) -> dict:
         # Get annotations - in HF format these are nested with lists
         annotations = example.get("annotations", {})
 
-        # yes_no_answer is a list of ints: -1=none, 0=no, 1=yes
+        # yes_no_answer: -1=none (extractive QA), 0=no, 1=yes
         yes_no_list = annotations.get("yes_no_answer", [-1])
         yes_no = yes_no_list[0] if yes_no_list else -1
 
-        # Skip if no valid answer
-        if yes_no == -1:
-            return None
+        # Map to string format expected by original code
+        # Original code skips when yes_no_answer == 'None', so we need non-None
+        # But actually most examples are extractive (-1), so let's keep those too
+        # and just set yes_no_answer to "NONE" which the original code checks
+        if yes_no == 1:
+            yes_no_str = "YES"
+        elif yes_no == 0:
+            yes_no_str = "NO"
+        else:
+            yes_no_str = "NONE"  # Extractive QA - this is fine!
 
         # long_answer has lists for each field
         long_answer = annotations.get("long_answer", {})
@@ -113,28 +135,28 @@ def convert_example(example: dict) -> dict:
         la_start = la_start_list[0] if la_start_list else -1
         la_end = la_end_list[0] if la_end_list else -1
 
-        if la_start < 0 or la_end < 0:
+        # Need valid long answer
+        if la_start < 0 or la_end < 0 or la_start >= la_end:
             return None
 
-        # short_answers is a list of answer spans
-        # Each element has start_token and end_token as lists
+        # short_answers is a list of answer dicts
         short_answers_list = annotations.get("short_answers", [])
 
-        if not short_answers_list:
-            return None
+        # Get first valid short answer
+        sa_start = -1
+        sa_end = -1
 
-        # Get first short answer
-        first_short = short_answers_list[0] if short_answers_list else {}
-        sa_start_list = first_short.get("start_token", [])
-        sa_end_list = first_short.get("end_token", [])
+        if short_answers_list:
+            first_short = short_answers_list[0]
+            sa_start_list = first_short.get("start_token", [])
+            sa_end_list = first_short.get("end_token", [])
 
-        if not sa_start_list or not sa_end_list:
-            return None
+            if sa_start_list and sa_end_list:
+                sa_start = sa_start_list[0] if sa_start_list else -1
+                sa_end = sa_end_list[0] if sa_end_list else -1
 
-        sa_start = sa_start_list[0] if sa_start_list else -1
-        sa_end = sa_end_list[0] if sa_end_list else -1
-
-        if sa_start < 0 or sa_end < 0:
+        # Need valid short answer
+        if sa_start < 0 or sa_end < 0 or sa_start >= sa_end:
             return None
 
         # Get document tokens
@@ -158,12 +180,15 @@ def convert_example(example: dict) -> dict:
         question = example.get("question", {})
         question_text = question.get("text", "") if isinstance(question, dict) else str(question)
 
+        if not question_text:
+            return None
+
         # Build converted example
         converted = {
             "question_text": question_text,
             "document_tokens": document_tokens,
             "annotations": [{
-                "yes_no_answer": "YES" if yes_no == 1 else "NO",
+                "yes_no_answer": yes_no_str,
                 "long_answer": {
                     "start_token": la_start,
                     "end_token": la_end
@@ -177,7 +202,7 @@ def convert_example(example: dict) -> dict:
 
         return converted
 
-    except Exception as e:
+    except Exception:
         # Skip malformed examples
         return None
 
