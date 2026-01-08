@@ -9,7 +9,7 @@ from tqdm import trange
 from omegaconf import OmegaConf
 from collections import OrderedDict
 import copy
-from transformers import LlamaTokenizer
+from transformers import AutoTokenizer
 from modeling_memoryllm import MemoryLLM
 from torch.utils.data import Dataset, DataLoader
 from dataset.nq import NQDataset
@@ -384,7 +384,7 @@ if __name__ == "__main__":
                             model = MemoryLLM.from_pretrained(opt.model, device_map='auto')
                     
                     if tokenizer is None:
-                        tokenizer = LlamaTokenizer.from_pretrained(opt.model)
+                        tokenizer = AutoTokenizer.from_pretrained(opt.model)
 
                     middle_outputs, targets, contexts_middle, questions = run_qa(model, tokenizer, dataset, step=opt.nuc)
 
@@ -472,7 +472,7 @@ if __name__ == "__main__":
                 model = model.to(torch.float16)
                 
                 if tokenizer is None:
-                    tokenizer = LlamaTokenizer.from_pretrained(opt.model)
+                    tokenizer = AutoTokenizer.from_pretrained(opt.model)
 
                 middle_outputs, targets, contexts_middle, questions = run_qa(model, tokenizer, dataset, step=opt.nuc)
 
