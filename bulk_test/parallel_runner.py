@@ -75,24 +75,26 @@ num_contexts = {num_contexts}
 gpu_id = {gpu_id}
 
 try:
-    from configuration_memoryllm import MemoryLLMConfig
     from modeling_memoryllm import MemoryLLM
     from transformers import AutoTokenizer
 
     print(f"Loading model on GPU {{gpu_id}} with strategy: {{strategy}}")
 
-    # Load model with strategy
-    config = MemoryLLMConfig.from_pretrained(model_path)
-    config.drop_strategy = strategy
+    # Load model - simpler approach like original test_qa_memory.py
+    model = MemoryLLM.from_pretrained(model_path, torch_dtype=torch.bfloat16).cuda()
 
-    model = MemoryLLM.from_pretrained(
-        model_path,
-        config=config,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda:0"
-    )
+    # Set drop strategy after loading
+    model.drop_strategy = strategy
+    if strategy != 'random':
+        from bulk_test.drop_strategies import MemoryTracker
+        model.memory_tracker = MemoryTracker(
+            num_layers=model.config.num_hidden_layers,
+            num_tokens=model.num_blocks * model.num_tokens,
+            device='cuda'
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer.pad_token = tokenizer.eos_token
 
     # Load test data
     from dataset.nq import NQDataset
@@ -119,9 +121,21 @@ try:
             model.inject_memory(uc_ids, update_memory=True)
 
         # Generate
-        question_ids = tokenizer(question, return_tensors="pt").input_ids.cuda()
+        question_encoded = tokenizer(question, return_tensors="pt")
+        question_ids = question_encoded.input_ids.cuda()
+        attention_mask = torch.cat([
+            torch.ones(1, model.num_tokens * (model.num_blocks - 1)).cuda(),
+            question_encoded.attention_mask.cuda()
+        ], dim=1)
+
         with torch.no_grad():
-            output = model.generate(question_ids, max_new_tokens=50, do_sample=False)
+            output = model.generate(
+                inputs=question_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=50,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id
+            )
         prediction = tokenizer.decode(output[0], skip_special_tokens=True)
 
         if answer.lower() in prediction.lower():
