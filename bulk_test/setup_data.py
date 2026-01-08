@@ -28,10 +28,14 @@ def setup_nq_dataset(output_dir: str = "data/nq", num_dev_samples: int = 1000):
     indices_file = output_path / "indices_nq_4.npy"
 
     print("Loading Natural Questions dataset from Hugging Face...")
-    print("(This may take a while on first run - dataset is ~40GB)")
+    print("(Streaming mode - only downloads what we need)")
 
-    # Load dataset
-    dataset = load_dataset("google-research-datasets/natural_questions", "default")
+    # Load dataset in streaming mode to avoid downloading 40GB
+    dataset = load_dataset(
+        "google-research-datasets/natural_questions",
+        "default",
+        streaming=True  # Stream instead of downloading everything
+    )
 
     # Process validation set (used as dev)
     print("\nProcessing validation set...")
