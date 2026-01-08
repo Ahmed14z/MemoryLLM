@@ -287,10 +287,11 @@ def run_qa(model, tokenizer, dataset, step=1):
                 if opt.related_position == 'begin':
 
                     output = model.generate(
-                        inputs=sentence_ids, 
+                        inputs=sentence_ids,
                         attention_mask=sentence_attention_mask,
                         max_new_tokens=10,
-                        pad_token_id=tokenizer.pad_token_id
+                        pad_token_id=tokenizer.pad_token_id,
+                        do_sample=False,  # Use greedy decoding to avoid NaN errors
                     )[:, len(sentence_ids[0]):][0].detach().cpu()
 
                     middle_outputs[f"step_{idx}"].append(output)
@@ -303,10 +304,11 @@ def run_qa(model, tokenizer, dataset, step=1):
             if opt.related_position != 'begin':
 
                 output = model.generate(
-                    inputs=sentence_ids, 
+                    inputs=sentence_ids,
                     attention_mask=sentence_attention_mask,
                     max_new_tokens=10,
-                    pad_token_id=tokenizer.pad_token_id
+                    pad_token_id=tokenizer.pad_token_id,
+                    do_sample=False,  # Use greedy decoding to avoid NaN errors
                 )[:, len(sentence_ids[0]):][0].detach().cpu()
 
                 middle_outputs[f"step_0"].append(output)

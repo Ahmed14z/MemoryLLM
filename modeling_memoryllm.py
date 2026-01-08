@@ -1534,6 +1534,7 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
         # Bulk testing: Drop strategy support
         self.drop_strategy = getattr(config, 'drop_strategy', 'random')
         self.memory_tracker = None
+        self._last_attention_scores = None  # Store attention for attention-guided dropping
         if self.drop_strategy != 'random':
             try:
                 from bulk_test.drop_strategies import MemoryTracker
@@ -1569,17 +1570,42 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
                 self.model = get_peft_model(self.model, peft_config, adapter_name="decoder_adapter")
 
 
-    def inject_memory(self, context_ids, 
+    def inject_memory(self, context_ids,
                         context_attention_mask=None,
                         delta_memory=None,
                         update_memory=False):
+
+        # Enable attention output for attention-guided drop strategies
+        capture_attention = self.drop_strategy == 'attention_score'
 
         output = self(input_ids=context_ids,
                 attention_mask=context_attention_mask,
                 delta_memory=delta_memory,
                 is_injection=True,
                 output_delta_memory=True,
+                output_attentions=capture_attention,
                 return_dict=True)
+
+        # Store attention scores for drop strategy
+        if capture_attention and output.attentions is not None:
+            # Attentions: tuple of [batch, heads, query_len, key_len] per layer
+            # Average across layers, then store
+            # We care about attention TO memory tokens (first num_tokens*num_blocks positions)
+            memory_len = self.num_tokens * self.num_blocks
+            all_attns = []
+            for layer_attn in output.attentions:
+                # layer_attn: [batch, heads, query_len, key_len]
+                # Get attention to memory portion: [:, :, :, :memory_len]
+                if layer_attn.shape[-1] >= memory_len:
+                    memory_attn = layer_attn[:, :, :, :memory_len]
+                    # Average over queries to get importance per memory token
+                    # [batch, heads, memory_len]
+                    memory_importance = memory_attn.mean(dim=2)
+                    all_attns.append(memory_importance)
+
+            if all_attns:
+                # Average across layers: [batch, heads, memory_len]
+                self._last_attention_scores = torch.stack(all_attns).mean(dim=0)
 
         if update_memory:
             self.update_memory_with_delta_memory(output.delta_memory)
@@ -1617,7 +1643,8 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
                     drop_length=drop_length,
                     strategy=self.drop_strategy,
                     tracker=self.memory_tracker,
-                    layer_idx=layer_idx
+                    layer_idx=layer_idx,
+                    attention_scores=self._last_attention_scores,  # Pass attention for attention_score strategy
                 )
 
                 # Update tracker if available

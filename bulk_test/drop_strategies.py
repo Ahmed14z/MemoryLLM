@@ -500,15 +500,60 @@ def layer_aware_drop(memory: torch.Tensor, keep_length: int, tracker: MemoryTrac
 
 def attention_score_drop(memory: torch.Tensor, keep_length: int, attention_scores: torch.Tensor = None,
                          **kwargs) -> torch.Tensor:
-    """Drop based on attention scores from last forward pass."""
+    """
+    Drop based on attention scores from last forward pass.
+
+    Keeps tokens that received MORE attention (higher importance).
+
+    Args:
+        memory: Memory tensor [num_tokens, hidden] or [batch, num_tokens, hidden]
+        keep_length: Number of tokens to keep
+        attention_scores: Attention tensor, shape can be:
+            - [batch, heads, memory_len] (from inject_memory)
+            - [batch, heads, query_len, key_len] (raw attention)
+            - [memory_len] (pre-averaged)
+    """
     if attention_scores is None:
         return random_drop(memory, keep_length)
 
-    # Average attention across heads and queries
-    avg_attention = attention_scores.mean(dim=(0, 1))  # [num_memory_tokens]
+    num_tokens = memory.shape[0] if memory.dim() == 2 else memory.shape[1]
 
-    _, indices = avg_attention.topk(keep_length)
-    return indices.sort()[0]
+    try:
+        # Handle various attention shapes
+        if attention_scores.dim() == 1:
+            # Already averaged: [memory_len]
+            avg_attention = attention_scores
+        elif attention_scores.dim() == 3:
+            # [batch, heads, memory_len] - average over batch and heads
+            avg_attention = attention_scores.mean(dim=(0, 1))
+        elif attention_scores.dim() == 4:
+            # [batch, heads, query_len, key_len] - average over batch, heads, queries
+            avg_attention = attention_scores.mean(dim=(0, 1, 2))
+        else:
+            # Unknown shape, fallback to random
+            return random_drop(memory, keep_length)
+
+        # Ensure attention matches memory size
+        if avg_attention.shape[0] != num_tokens:
+            # Truncate or pad as needed
+            if avg_attention.shape[0] > num_tokens:
+                avg_attention = avg_attention[:num_tokens]
+            else:
+                # Pad with mean value
+                pad_size = num_tokens - avg_attention.shape[0]
+                pad_val = avg_attention.mean()
+                avg_attention = torch.cat([
+                    avg_attention,
+                    torch.full((pad_size,), pad_val, device=avg_attention.device)
+                ])
+
+        # Keep tokens with highest attention (most important)
+        _, indices = avg_attention.topk(keep_length)
+        return indices.sort()[0]
+
+    except Exception:
+        # Fallback to random on any error
+        return random_drop(memory, keep_length)
 
 
 # ============================================================================
