@@ -93,70 +93,93 @@ def setup_nq_dataset(output_dir: str = "data/nq", num_dev_samples: int = 1000):
 def convert_example(example: dict) -> dict:
     """Convert HuggingFace NQ format to expected jsonl format."""
 
-    # Get annotations
-    annotations = example.get("annotations", {})
+    try:
+        # Get annotations - in HF format these are nested with lists
+        annotations = example.get("annotations", {})
 
-    # Check for valid answer
-    yes_no = annotations.get("yes_no_answer", [-1])
-    if isinstance(yes_no, list):
-        yes_no = yes_no[0] if yes_no else -1
+        # yes_no_answer is a list of ints: -1=none, 0=no, 1=yes
+        yes_no_list = annotations.get("yes_no_answer", [-1])
+        yes_no = yes_no_list[0] if yes_no_list else -1
 
-    # Skip if no valid answer type
-    # In HF format: -1 = none, 0 = no, 1 = yes
-    if yes_no == -1:
-        return None
+        # Skip if no valid answer
+        if yes_no == -1:
+            return None
 
-    # Get short answers
-    short_answers = annotations.get("short_answers", {})
-    start_tokens = short_answers.get("start_token", [])
-    end_tokens = short_answers.get("end_token", [])
+        # long_answer has lists for each field
+        long_answer = annotations.get("long_answer", {})
+        la_start_list = long_answer.get("start_token", [-1])
+        la_end_list = long_answer.get("end_token", [-1])
 
-    if not start_tokens or not end_tokens:
-        return None
+        la_start = la_start_list[0] if la_start_list else -1
+        la_end = la_end_list[0] if la_end_list else -1
 
-    # Get long answer
-    long_answer = annotations.get("long_answer", {})
-    la_start = long_answer.get("start_token", -1)
-    la_end = long_answer.get("end_token", -1)
+        if la_start < 0 or la_end < 0:
+            return None
 
-    if la_start < 0 or la_end < 0:
-        return None
+        # short_answers is a list of answer spans
+        # Each element has start_token and end_token as lists
+        short_answers_list = annotations.get("short_answers", [])
 
-    # Get document tokens
-    document = example.get("document", {})
-    tokens = document.get("tokens", {})
-    token_texts = tokens.get("token", [])
-    is_html = tokens.get("is_html", [])
+        if not short_answers_list:
+            return None
 
-    if not token_texts:
-        return None
+        # Get first short answer
+        first_short = short_answers_list[0] if short_answers_list else {}
+        sa_start_list = first_short.get("start_token", [])
+        sa_end_list = first_short.get("end_token", [])
 
-    # Build document_tokens in expected format
-    document_tokens = []
-    for text, html in zip(token_texts, is_html):
-        document_tokens.append({
-            "token": text,
-            "html_token": html
-        })
+        if not sa_start_list or not sa_end_list:
+            return None
 
-    # Build converted example
-    converted = {
-        "question_text": example.get("question", {}).get("text", ""),
-        "document_tokens": document_tokens,
-        "annotations": [{
-            "yes_no_answer": "YES" if yes_no == 1 else "NO",
-            "long_answer": {
-                "start_token": la_start,
-                "end_token": la_end
-            },
-            "short_answers": [{
-                "start_token": start_tokens[0],
-                "end_token": end_tokens[0]
+        sa_start = sa_start_list[0] if sa_start_list else -1
+        sa_end = sa_end_list[0] if sa_end_list else -1
+
+        if sa_start < 0 or sa_end < 0:
+            return None
+
+        # Get document tokens
+        document = example.get("document", {})
+        tokens = document.get("tokens", {})
+        token_texts = tokens.get("token", [])
+        is_html = tokens.get("is_html", [])
+
+        if not token_texts:
+            return None
+
+        # Build document_tokens in expected format
+        document_tokens = []
+        for text, html in zip(token_texts, is_html):
+            document_tokens.append({
+                "token": text,
+                "html_token": html
+            })
+
+        # Get question text
+        question = example.get("question", {})
+        question_text = question.get("text", "") if isinstance(question, dict) else str(question)
+
+        # Build converted example
+        converted = {
+            "question_text": question_text,
+            "document_tokens": document_tokens,
+            "annotations": [{
+                "yes_no_answer": "YES" if yes_no == 1 else "NO",
+                "long_answer": {
+                    "start_token": la_start,
+                    "end_token": la_end
+                },
+                "short_answers": [{
+                    "start_token": sa_start,
+                    "end_token": sa_end
+                }]
             }]
-        }]
-    }
+        }
 
-    return converted
+        return converted
+
+    except Exception as e:
+        # Skip malformed examples
+        return None
 
 
 def verify_setup(data_dir: str = "data/nq"):
