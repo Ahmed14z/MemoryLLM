@@ -62,7 +62,7 @@ def create_test_script(strategy: str, gpu_id: int, model_path: str,
     script = '''import sys
 sys.path.insert(0, '.')
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "{gpu_id}"
+# CUDA_VISIBLE_DEVICES is set via subprocess env, not here
 
 import torch
 import json
@@ -201,13 +201,17 @@ def run_strategy_on_gpu(
     script_path.write_text(test_script)
 
     try:
-        # Run the test
+        # Run the test with CUDA_VISIBLE_DEVICES set in environment
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
         result = subprocess.run(
             [sys.executable, str(script_path)],
             capture_output=True,
             text=True,
             timeout=3600,  # 1 hour timeout
-            cwd=str(Path(__file__).parent.parent)
+            cwd=str(Path(__file__).parent.parent),
+            env=env
         )
 
         # Parse result from output
