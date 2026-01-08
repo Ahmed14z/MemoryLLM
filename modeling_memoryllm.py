@@ -1575,21 +1575,30 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
                         delta_memory=None,
                         update_memory=False):
 
-        # For attention_score strategy, we use a memory-efficient approach:
-        # Instead of output_attentions=True (which stores ~13GB of attention tensors),
-        # we use the memory tracker's access patterns or norm-based importance
-        capture_attention = False  # Disabled - too memory intensive
+        # attention_score strategy uses hybrid scoring by default (memory efficient)
+        # Set model.use_full_attention = True on H100/A100 80GB to use actual attention
+        use_full_attention = getattr(self, 'use_full_attention', False)
+        capture_attention = self.drop_strategy == 'attention_score' and use_full_attention
 
         output = self(input_ids=context_ids,
                 attention_mask=context_attention_mask,
                 delta_memory=delta_memory,
                 is_injection=True,
                 output_delta_memory=True,
-                output_attentions=False,  # Keep disabled to save memory
+                output_attentions=capture_attention,
                 return_dict=True)
 
-        # Note: attention_score strategy will fall back to using memory tracker
-        # or norm-based scoring instead of raw attention (too memory intensive)
+        # Store attention if captured (only on high-memory GPUs with use_full_attention=True)
+        if capture_attention and output.attentions is not None and len(output.attentions) > 0:
+            last_layer_attn = output.attentions[-1]
+            memory_len = self.num_tokens * self.num_blocks
+
+            if last_layer_attn.shape[-1] >= memory_len:
+                memory_attn = last_layer_attn[:, :, :, :memory_len].mean(dim=2)
+                self._last_attention_scores = memory_attn.detach()
+
+            del output.attentions
+            torch.cuda.empty_cache()
 
         if update_memory:
             self.update_memory_with_delta_memory(output.delta_memory)
