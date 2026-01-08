@@ -1575,37 +1575,21 @@ class MemoryLLM(LlamaForCausalLM, GenerationMixin):
                         delta_memory=None,
                         update_memory=False):
 
-        # Enable attention output for attention-guided drop strategies
-        capture_attention = self.drop_strategy == 'attention_score'
+        # For attention_score strategy, we use a memory-efficient approach:
+        # Instead of output_attentions=True (which stores ~13GB of attention tensors),
+        # we use the memory tracker's access patterns or norm-based importance
+        capture_attention = False  # Disabled - too memory intensive
 
         output = self(input_ids=context_ids,
                 attention_mask=context_attention_mask,
                 delta_memory=delta_memory,
                 is_injection=True,
                 output_delta_memory=True,
-                output_attentions=capture_attention,
+                output_attentions=False,  # Keep disabled to save memory
                 return_dict=True)
 
-        # Store attention scores for drop strategy
-        if capture_attention and output.attentions is not None:
-            # Attentions: tuple of [batch, heads, query_len, key_len] per layer
-            # Average across layers, then store
-            # We care about attention TO memory tokens (first num_tokens*num_blocks positions)
-            memory_len = self.num_tokens * self.num_blocks
-            all_attns = []
-            for layer_attn in output.attentions:
-                # layer_attn: [batch, heads, query_len, key_len]
-                # Get attention to memory portion: [:, :, :, :memory_len]
-                if layer_attn.shape[-1] >= memory_len:
-                    memory_attn = layer_attn[:, :, :, :memory_len]
-                    # Average over queries to get importance per memory token
-                    # [batch, heads, memory_len]
-                    memory_importance = memory_attn.mean(dim=2)
-                    all_attns.append(memory_importance)
-
-            if all_attns:
-                # Average across layers: [batch, heads, memory_len]
-                self._last_attention_scores = torch.stack(all_attns).mean(dim=0)
+        # Note: attention_score strategy will fall back to using memory tracker
+        # or norm-based scoring instead of raw attention (too memory intensive)
 
         if update_memory:
             self.update_memory_with_delta_memory(output.delta_memory)

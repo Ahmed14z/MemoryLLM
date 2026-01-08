@@ -499,61 +499,77 @@ def layer_aware_drop(memory: torch.Tensor, keep_length: int, tracker: MemoryTrac
 
 
 def attention_score_drop(memory: torch.Tensor, keep_length: int, attention_scores: torch.Tensor = None,
-                         **kwargs) -> torch.Tensor:
+                         tracker: MemoryTracker = None, layer_idx: int = 0, **kwargs) -> torch.Tensor:
     """
-    Drop based on attention scores from last forward pass.
+    Smart importance-based drop using available signals.
 
-    Keeps tokens that received MORE attention (higher importance).
+    Since capturing raw attention requires ~13GB of memory (too expensive),
+    we use a hybrid approach combining:
+    1. Embedding norms (higher norm = more information content)
+    2. Recency from tracker (recently used = more relevant)
+    3. Access frequency from tracker (frequently accessed = important)
 
-    Args:
-        memory: Memory tensor [num_tokens, hidden] or [batch, num_tokens, hidden]
-        keep_length: Number of tokens to keep
-        attention_scores: Attention tensor, shape can be:
-            - [batch, heads, memory_len] (from inject_memory)
-            - [batch, heads, query_len, key_len] (raw attention)
-            - [memory_len] (pre-averaged)
+    This approximates attention-based importance without the memory cost.
     """
-    if attention_scores is None:
-        return random_drop(memory, keep_length)
-
     num_tokens = memory.shape[0] if memory.dim() == 2 else memory.shape[1]
 
-    try:
-        # Handle various attention shapes
-        if attention_scores.dim() == 1:
-            # Already averaged: [memory_len]
-            avg_attention = attention_scores
-        elif attention_scores.dim() == 3:
-            # [batch, heads, memory_len] - average over batch and heads
-            avg_attention = attention_scores.mean(dim=(0, 1))
-        elif attention_scores.dim() == 4:
-            # [batch, heads, query_len, key_len] - average over batch, heads, queries
-            avg_attention = attention_scores.mean(dim=(0, 1, 2))
-        else:
-            # Unknown shape, fallback to random
-            return random_drop(memory, keep_length)
-
-        # Ensure attention matches memory size
-        if avg_attention.shape[0] != num_tokens:
-            # Truncate or pad as needed
-            if avg_attention.shape[0] > num_tokens:
-                avg_attention = avg_attention[:num_tokens]
+    # If we have actual attention scores, use them
+    if attention_scores is not None:
+        try:
+            if attention_scores.dim() == 1:
+                avg_attention = attention_scores
+            elif attention_scores.dim() == 3:
+                avg_attention = attention_scores.mean(dim=(0, 1))
+            elif attention_scores.dim() == 4:
+                avg_attention = attention_scores.mean(dim=(0, 1, 2))
             else:
-                # Pad with mean value
-                pad_size = num_tokens - avg_attention.shape[0]
-                pad_val = avg_attention.mean()
-                avg_attention = torch.cat([
-                    avg_attention,
-                    torch.full((pad_size,), pad_val, device=avg_attention.device)
-                ])
+                avg_attention = None
 
-        # Keep tokens with highest attention (most important)
-        _, indices = avg_attention.topk(keep_length)
-        return indices.sort()[0]
+            if avg_attention is not None and avg_attention.shape[0] >= keep_length:
+                if avg_attention.shape[0] > num_tokens:
+                    avg_attention = avg_attention[:num_tokens]
+                _, indices = avg_attention.topk(keep_length)
+                return indices.sort()[0]
+        except Exception:
+            pass
 
-    except Exception:
-        # Fallback to random on any error
-        return random_drop(memory, keep_length)
+    # Hybrid importance scoring (memory-efficient alternative)
+    mem = memory if memory.dim() == 2 else memory.squeeze(0)
+    device = mem.device
+
+    # Component 1: Norm-based importance (higher norm = more content)
+    norms = torch.norm(mem, dim=-1)
+    norm_scores = (norms - norms.min()) / (norms.max() - norms.min() + 1e-8)
+
+    # Component 2: Recency score (newer = higher score)
+    if tracker is not None:
+        timestamps = tracker.get_timestamps(layer_idx)
+        if timestamps is not None and len(timestamps) == num_tokens:
+            timestamps = timestamps.to(device).float()
+            recency_scores = (timestamps - timestamps.min()) / (timestamps.max() - timestamps.min() + 1e-8)
+        else:
+            recency_scores = torch.zeros(num_tokens, device=device)
+    else:
+        # Without tracker, assume uniform recency
+        recency_scores = torch.zeros(num_tokens, device=device)
+
+    # Component 3: Access frequency (more accesses = more important)
+    if tracker is not None:
+        access_counts = tracker.get_access_counts(layer_idx)
+        if access_counts is not None and len(access_counts) == num_tokens:
+            access_counts = access_counts.to(device).float()
+            access_scores = (access_counts - access_counts.min()) / (access_counts.max() - access_counts.min() + 1e-8)
+        else:
+            access_scores = torch.zeros(num_tokens, device=device)
+    else:
+        access_scores = torch.zeros(num_tokens, device=device)
+
+    # Weighted combination: norm matters most, then recency, then access
+    importance = 0.5 * norm_scores + 0.3 * recency_scores + 0.2 * access_scores
+
+    # Keep highest importance tokens
+    _, indices = importance.topk(keep_length)
+    return indices.sort()[0]
 
 
 # ============================================================================
