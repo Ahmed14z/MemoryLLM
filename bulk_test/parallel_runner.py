@@ -62,11 +62,16 @@ def create_test_script(strategy: str, gpu_id: int, model_path: str,
     script = '''import sys
 sys.path.insert(0, '.')
 import os
+import gc
 # CUDA_VISIBLE_DEVICES is set via subprocess env, not here
 
 import torch
 import json
 from datetime import datetime
+
+# Clear any leftover GPU memory
+torch.cuda.empty_cache()
+gc.collect()
 
 strategy = "{strategy}"
 model_path = "{model_path}"
@@ -79,6 +84,7 @@ try:
     from transformers import AutoTokenizer
 
     print(f"Loading model on GPU {{gpu_id}} with strategy: {{strategy}}")
+    print(f"GPU memory before load: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
 
     # Load model - simpler approach like original test_qa_memory.py
     model = MemoryLLM.from_pretrained(model_path, torch_dtype=torch.bfloat16).cuda()

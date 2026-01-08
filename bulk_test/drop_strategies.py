@@ -49,6 +49,24 @@ class MemoryTracker:
         """Advance time step."""
         self.step += 1
 
+    def get_timestamps(self, layer_idx: int) -> torch.Tensor:
+        """Get last access timestamps for a layer."""
+        if self.last_access is None:
+            return None
+        return self.last_access[layer_idx]
+
+    def get_access_counts(self, layer_idx: int) -> torch.Tensor:
+        """Get access counts for a layer."""
+        if self.access_counts is None:
+            return None
+        return self.access_counts[layer_idx]
+
+    def get_insertion_order(self, layer_idx: int) -> torch.Tensor:
+        """Get insertion order for a layer."""
+        if self.insertion_order is None:
+            return None
+        return self.insertion_order[layer_idx]
+
     def to(self, device: str):
         """Move tracking tensors to device."""
         self.device = device
