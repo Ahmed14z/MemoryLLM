@@ -80,14 +80,30 @@ num_contexts = {num_contexts}
 gpu_id = {gpu_id}
 
 try:
+    print(f"=== DEBUG INFO ===")
+    print(f"CUDA_VISIBLE_DEVICES: {{os.environ.get('CUDA_VISIBLE_DEVICES', 'NOT SET')}}")
+    print(f"torch.cuda.device_count(): {{torch.cuda.device_count()}}")
+    print(f"torch.cuda.current_device(): {{torch.cuda.current_device()}}")
+    print(f"GPU memory before import: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+
     from modeling_memoryllm import MemoryLLM
     from transformers import AutoTokenizer
 
     print(f"Loading model on GPU {{gpu_id}} with strategy: {{strategy}}")
-    print(f"GPU memory before load: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+    print(f"GPU memory after import: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
 
-    # Load model - simpler approach like original test_qa_memory.py
-    model = MemoryLLM.from_pretrained(model_path, torch_dtype=torch.bfloat16).cuda()
+    # Load model with explicit device mapping to avoid loading on wrong GPU
+    print(f"Loading model...")
+    model = MemoryLLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
+    print(f"GPU memory after from_pretrained: {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+
+    model = model.cuda()
+    print(f"GPU memory after .cuda(): {{torch.cuda.memory_allocated() / 1e9:.2f}} GB")
+
+    # Print model memory config
+    print(f"Model config: num_tokens={{model.num_tokens}}, num_blocks={{model.num_blocks}}")
+    print(f"Memory shape: {{model.memory.shape}}")
+    print(f"Memory size: {{model.memory.numel() * 2 / 1e9:.2f}} GB (bf16)")
 
     # Set drop strategy after loading
     model.drop_strategy = strategy
@@ -222,6 +238,12 @@ def run_strategy_on_gpu(
 
         # Parse result from output
         output = result.stdout + result.stderr
+
+        # Print full output for debugging if error occurred
+        if result.returncode != 0 or 'Error' in output or 'error' in output.lower():
+            print(f"\n=== FULL OUTPUT FOR {strategy} (GPU {gpu_id}) ===")
+            print(output[-3000:])  # Last 3000 chars
+            print("=== END OUTPUT ===\n")
 
         # Find JSON result
         for line in output.split('\n'):
