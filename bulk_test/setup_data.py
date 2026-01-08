@@ -60,7 +60,7 @@ def setup_nq_dataset(output_dir: str = "data/nq", num_dev_samples: int = 1000):
     # Process training set (for unrelated contexts)
     print("\nProcessing training set (for unrelated contexts)...")
     train_count = 0
-    max_train = 5000  # We only need a subset for unrelated contexts
+    max_train = 200  # We only need ~50 for unrelated contexts, 200 is plenty
 
     with open(train_file, "w") as f:
         for idx, example in enumerate(dataset["train"]):
