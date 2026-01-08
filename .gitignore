@@ -4,3 +4,7 @@ train/data/redpajama/documents
 train/data/redpajama/listings
 train/logs
 locals
+venv/
+results/
+*.pyc
+.ipynb_checkpoints/

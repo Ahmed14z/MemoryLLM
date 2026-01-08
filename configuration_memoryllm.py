@@ -144,6 +144,7 @@ class MemoryLLMConfig(PretrainedConfig):
         drop_memory_per_layer=False,
         add_decoder_lora=False,
         lora_config=None,
+        drop_strategy="random",  # Bulk testing: memory drop strategy
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -178,6 +179,7 @@ class MemoryLLMConfig(PretrainedConfig):
         self.drop_memory_per_layer = drop_memory_per_layer
         self.add_decoder_lora = add_decoder_lora
         self.lora_config = lora_config
+        self.drop_strategy = drop_strategy  # Bulk testing: memory drop strategy
 
         super().__init__(
             pad_token_id=pad_token_id,

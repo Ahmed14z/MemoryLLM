@@ -1,17 +1,25 @@
+# Core dependencies (uses system torch)
 cachetools
 einops
 ipdb
 nltk
 omegaconf
 packaging
-pytorch_lightning==2.2.2
 PyYAML
 tqdm
 SentencePiece
-transformers==4.40.0
-deepspeed==0.14.1
-torch==2.2.2
-peft==0.10.0
 numpy
-tensorboard
-accelerate==0.29.3
+
+# HuggingFace
+transformers>=4.40.0
+peft>=0.10.0
+accelerate>=0.29.3
+safetensors
+
+# For 4-bit quantization on smaller GPUs
+bitsandbytes
+
+# Optional: only needed for training
+# pytorch_lightning==2.2.2
+# deepspeed==0.14.1
+# tensorboard

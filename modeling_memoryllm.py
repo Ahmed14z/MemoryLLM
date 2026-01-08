@@ -1529,6 +1529,21 @@ class MemoryLLM(LlamaForCausalLM):
         self._detach_memory = False # new feature, will be used in later versions
         self.new_memory_positional_emb = nn.Parameter(torch.zeros([1, 1, self.d]))
 
+        # Bulk testing: Drop strategy support
+        self.drop_strategy = getattr(config, 'drop_strategy', 'random')
+        self.memory_tracker = None
+        if self.drop_strategy != 'random':
+            try:
+                from bulk_test.drop_strategies import MemoryTracker
+                self.memory_tracker = MemoryTracker(
+                    num_layers=self.L,
+                    num_tokens=self.num_blocks * self.num_tokens,
+                    device='cuda' if torch.cuda.is_available() else 'cpu'
+                )
+            except ImportError:
+                print(f"Warning: bulk_test module not found, falling back to random strategy")
+                self.drop_strategy = 'random'
+
         if config.add_bos_embedding:
             self.bos_embedding = nn.Parameter(torch.randn([self.L, 1, self.d]))
 
@@ -1570,35 +1585,57 @@ class MemoryLLM(LlamaForCausalLM):
             return output.delta_memory
 
 
-    def drop_memory(self, current_memory, drop_length=None, unsequeezed=True):
+    def drop_memory(self, current_memory, drop_length=None, unsequeezed=True, layer_idx=0):
+        """
+        Drop memory tokens using configured strategy.
 
+        Args:
+            current_memory: Memory tensor to drop from
+            drop_length: Number of tokens to drop (default: 1/num_blocks)
+            unsequeezed: Whether memory has batch dimension
+            layer_idx: Current layer index (for layer-aware strategies)
+        """
+        # Calculate drop length if not specified
         if unsequeezed:
-
-            if drop_length is None:
-                left_indices = torch.randperm(current_memory.shape[1])[:current_memory.shape[1] - int(current_memory.shape[1] * (1 / self.num_blocks))]
-            else:
-                left_indices = torch.randperm(current_memory.shape[1])[:current_memory.shape[1] - drop_length]
-            
-            # sort left_indices to make sure it is in ascending order
-            left_indices = left_indices.sort()[0]
-
-            current_memory = current_memory[:, left_indices, :]
-            
-            return current_memory
-
+            shape = current_memory.shape[1]
         else:
+            shape = current_memory.shape[0]
 
-            if drop_length is None:
-                left_indices = torch.randperm(current_memory.shape[0])[:current_memory.shape[0] - int(current_memory.shape[0] * (1 / self.num_blocks))]
-            else:
-                left_indices = torch.randperm(current_memory.shape[0])[:current_memory.shape[0] - drop_length]
-            
-            # sort left_indices to make sure it is in ascending order
+        if drop_length is None:
+            drop_length = int(shape * (1 / self.num_blocks))
+
+        # Use strategy-based dropping if available
+        if self.drop_strategy != 'random':
+            try:
+                from bulk_test.drop_strategies import get_drop_indices
+                left_indices = get_drop_indices(
+                    memory=current_memory,
+                    drop_length=drop_length,
+                    strategy=self.drop_strategy,
+                    tracker=self.memory_tracker,
+                    layer_idx=layer_idx
+                )
+
+                # Update tracker if available
+                if self.memory_tracker is not None:
+                    self.memory_tracker.tick()
+
+            except ImportError:
+                # Fallback to random
+                left_indices = torch.randperm(shape, device=current_memory.device)[:shape - drop_length]
+                left_indices = left_indices.sort()[0]
+        else:
+            # Original random drop
+            left_indices = torch.randperm(shape, device=current_memory.device)[:shape - drop_length]
             left_indices = left_indices.sort()[0]
 
+        # Apply dropping
+        if unsequeezed:
+            current_memory = current_memory[:, left_indices, :]
+        else:
             current_memory = current_memory[left_indices, :]
-            
-            return current_memory
+
+        return current_memory
 
     def update_memory_with_delta_memory(self, delta_memory):
         
@@ -1634,7 +1671,7 @@ class MemoryLLM(LlamaForCausalLM):
 
                     for idx in range(len(self.memory)):
                         current_memory = self.memory.data[idx].detach()
-                        current_memory = self.drop_memory(current_memory, unsequeezed=False)
+                        current_memory = self.drop_memory(current_memory, unsequeezed=False, layer_idx=idx)
                         self.memory.data[idx] = torch.cat([current_memory, delta_memory[idx]], dim=0)
 
                 else:
@@ -1643,7 +1680,7 @@ class MemoryLLM(LlamaForCausalLM):
                     # current_memory.shape: [L, num_blocks * num_tokens, d]
                     # we need to drop 1/num_blocks current_memories on dimension 1:
                     # current_memory = current_memory.detach().cpu()
-                    current_memory = self.drop_memory(current_memory)
+                    current_memory = self.drop_memory(current_memory, layer_idx=0)
                     # current_memory = current_memory.to(delta_memory.device)
 
                     if current_memory.device != delta_memory.device:
@@ -1655,12 +1692,12 @@ class MemoryLLM(LlamaForCausalLM):
                 if self.drop_memory_per_layer:
                     for idx in range(len(self.memory)):
                         current_memory = self.memory.data[idx].detach()
-                        current_memory = self.drop_memory(current_memory, delta_memory.shape[1], unsequeezed=False)
+                        current_memory = self.drop_memory(current_memory, delta_memory.shape[1], unsequeezed=False, layer_idx=idx)
                         self.memory.data[idx] = torch.cat([current_memory, delta_memory[idx]], dim=0)
                 else:
                     current_memory = self.memory.data.detach() # detach might be unnecessary, but just to make sure
                     # current_memory.shape: [L, num_blocks * num_tokens, d]
-                    current_memory = self.drop_memory(current_memory, delta_memory.shape[1])
+                    current_memory = self.drop_memory(current_memory, delta_memory.shape[1], layer_idx=0)
                     if current_memory.device != delta_memory.device:
                         print("current_memory.device != delta_memory.device")
                         self.memory.data = torch.cat([current_memory, delta_memory], dim=1)
