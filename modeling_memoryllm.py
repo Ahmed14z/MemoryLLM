@@ -1509,7 +1509,9 @@ class LlamaForTokenClassification(LlamaPreTrainedModel):
         )
 
 
-class MemoryLLM(LlamaForCausalLM):
+from transformers.generation.utils import GenerationMixin
+
+class MemoryLLM(LlamaForCausalLM, GenerationMixin):
     def __init__(self, config):
         LlamaForCausalLM.__init__(self, config)
         
@@ -1551,18 +1553,20 @@ class MemoryLLM(LlamaForCausalLM):
 
             from peft import get_peft_model, LoraConfig, TaskType
 
+            # Use FEATURE_EXTRACTION instead of CAUSAL_LM for inner LlamaModel
+            # CAUSAL_LM expects generation methods which LlamaModel doesn't have in newer transformers
             peft_config = LoraConfig(
-                task_type=TaskType.CAUSAL_LM, 
-                inference_mode=config.lora_config['inference_mode'], 
-                r=config.lora_config['r'], 
-                lora_alpha=config.lora_config['lora_alpha'], 
+                task_type=TaskType.FEATURE_EXTRACTION,
+                inference_mode=config.lora_config['inference_mode'],
+                r=config.lora_config['r'],
+                lora_alpha=config.lora_config['lora_alpha'],
                 lora_dropout=config.lora_config['lora_dropout'],
                 target_modules=config.lora_config.get('target_modules', None)
             )
 
-            get_peft_model(self.model, peft_config)
+            self.model = get_peft_model(self.model, peft_config)
             if config.add_decoder_lora:
-                get_peft_model(self.model, peft_config, adapter_name="decoder_adapter")
+                self.model = get_peft_model(self.model, peft_config, adapter_name="decoder_adapter")
 
 
     def inject_memory(self, context_ids, 

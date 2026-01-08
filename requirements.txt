@@ -9,6 +9,7 @@ PyYAML
 tqdm
 SentencePiece
 numpy
+scikit-learn
 
 # HuggingFace
 transformers>=4.40.0
