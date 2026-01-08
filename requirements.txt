@@ -15,6 +15,7 @@ transformers>=4.40.0
 peft>=0.10.0
 accelerate>=0.29.3
 safetensors
+datasets
 
 # For 4-bit quantization on smaller GPUs
 bitsandbytes
